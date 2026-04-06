@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Teto 远程客户端（控制端）
-修复房间号发送问题
+Teto 远程客户端（调试版）
+显示详细的视频流调试信息
 """
 import sys
 import socket
@@ -12,6 +12,7 @@ import struct
 from PIL import Image, ImageTk
 import io
 import time
+import traceback
 
 TETO_PROTOCOL = b"teto_run"
 
@@ -19,7 +20,7 @@ TETO_PROTOCOL = b"teto_run"
 class RemoteClient:
     def __init__(self, ip, room_id, port=5000):
         self.ip = ip
-        self.room = str(room_id).strip()  # 确保是字符串并去除空格
+        self.room = str(room_id).strip()
         self.port = port
         self.control_sock = None
         self.screen_sock = None
@@ -33,6 +34,12 @@ class RemoteClient:
         self.frame_count = 0
         self.last_fps_time = time.time()
         self.receive_thread = None
+        self.debug = True  # 开启调试模式
+
+    def log(self, msg):
+        """调试输出"""
+        if self.debug:
+            print(f"[DEBUG] {msg}")
 
     def connect(self):
         """连接控制端口"""
@@ -42,36 +49,22 @@ class RemoteClient:
             print(f"正在连接到 {self.ip}:{self.port}...")
             self.control_sock.connect((self.ip, self.port))
 
-            # 发送协议标识
             self.control_sock.send(TETO_PROTOCOL)
-            print(f"已发送协议: {TETO_PROTOCOL}")
+            self.control_sock.send(f"ROOM:{self.room}".encode())
 
-            # 发送房间号（确保格式正确）
-            room_msg = f"ROOM:{self.room}".encode()
-            self.control_sock.send(room_msg)
-            print(f"已发送房间号: {room_msg}")
-
-            # 接收响应
             res = self.control_sock.recv(1024).decode()
-            print(f"收到响应: {res}")
+            print(f"控制连接响应: {res}")
 
             if res != "OK":
-                print(f"❌ 连接失败: 房间号错误或服务器拒绝")
-                print(f"   您的房间号: {self.room}")
-                print(f"   请检查服务端显示的房间号是否正确")
+                print(f"❌ 连接失败")
                 return False
 
             print("✓ 控制连接成功！")
             return True
 
-        except socket.timeout:
-            print("❌ 连接超时，请检查网络和防火墙设置")
-            return False
-        except ConnectionRefusedError:
-            print("❌ 连接被拒绝，请确认服务端已启动且端口正确")
-            return False
         except Exception as e:
             print(f"❌ 控制连接失败: {e}")
+            traceback.print_exc()
             return False
 
     def start_video_stream(self):
@@ -83,13 +76,14 @@ class RemoteClient:
             self.screen_sock.settimeout(5)
             self.screen_sock.connect((self.ip, self.port + 1))
 
-            # 发送协议和房间号
             self.screen_sock.send(TETO_PROTOCOL)
             self.screen_sock.send(f"ROOM:{self.room}".encode())
 
             res = self.screen_sock.recv(1024).decode()
+            print(f"屏幕连接响应: {res}")
+
             if res != "OK":
-                print(f"❌ 屏幕传输连接失败: {res}")
+                print(f"❌ 屏幕传输连接失败")
                 return False
 
             print("✓ 屏幕连接成功！")
@@ -101,7 +95,7 @@ class RemoteClient:
 
             if response == "STREAM_OK":
                 self.streaming = True
-                print("✓ 视频流已启动，目标帧率: 30 FPS")
+                print("✓ 视频流已启动")
                 return True
             else:
                 print(f"❌ 启动视频流失败: {response}")
@@ -109,29 +103,14 @@ class RemoteClient:
 
         except Exception as e:
             print(f"❌ 启动视频流异常: {e}")
-            import traceback
             traceback.print_exc()
             return False
-
-    def stop_video_stream(self):
-        """停止视频流传输"""
-        try:
-            self.streaming = False
-            if self.control_sock:
-                self.control_sock.send(b"STOP_STREAM:")
-                try:
-                    self.control_sock.recv(1024)
-                except:
-                    pass
-            if self.screen_sock:
-                self.screen_sock.close()
-        except:
-            pass
-        print("视频流已停止")
 
     def receive_video_stream(self):
         """接收视频流数据"""
         print("开始接收视频流...")
+        frame_count = 0
+        last_print = time.time()
 
         while self.streaming and self.screen_sock:
             try:
@@ -142,12 +121,14 @@ class RemoteClient:
                 while len(len_data) < 4:
                     chunk = self.screen_sock.recv(4 - len(len_data))
                     if not chunk:
-                        raise Exception("连接已断开")
+                        self.log("连接已断开")
+                        return
                     len_data += chunk
 
                 img_len = struct.unpack('>I', len_data)[0]
+                self.log(f"收到图像长度: {img_len} 字节")
 
-                if 0 < img_len < 1024 * 1024 * 10:  # 10MB限制
+                if img_len > 0 and img_len < 1024 * 1024 * 10:  # 10MB限制
                     # 接收图像数据
                     img_data = b''
                     while len(img_data) < img_len:
@@ -157,43 +138,54 @@ class RemoteClient:
                         img_data += chunk
 
                     if len(img_data) == img_len:
+                        frame_count += 1
+                        self.log(f"成功接收第 {frame_count} 帧，大小: {img_len} 字节")
+
+                        # 显示图像
                         self.display_image(img_data)
 
-                        # 统计帧率
-                        self.frame_count += 1
-                        current_time = time.time()
-                        if current_time - self.last_fps_time >= 1.0:
-                            fps = self.frame_count / (current_time - self.last_fps_time)
-                            if self.root:
-                                self.root.title(f"Teto 远程控制 - {fps:.1f} FPS")
-                            print(f"帧率: {fps:.1f} FPS, 已接收 {self.frame_count} 帧")
-                            self.frame_count = 0
-                            self.last_fps_time = current_time
+                        # 打印帧率
+                        if time.time() - last_print >= 2:
+                            print(f"接收帧数: {frame_count}")
+                            last_print = time.time()
                     else:
                         print(f"接收不完整: {len(img_data)}/{img_len}")
                 else:
-                    print(f"无效长度: {img_len}")
+                    print(f"无效的图像长度: {img_len}")
 
             except socket.timeout:
                 continue
             except Exception as e:
                 print(f"接收视频流错误: {e}")
+                traceback.print_exc()
                 break
 
-        print("视频流接收结束")
+        print(f"视频流接收结束，共接收 {frame_count} 帧")
 
     def display_image(self, img_data):
         """显示图像"""
         if not self.root or not self.video_label:
+            self.log("GUI未就绪")
             return
 
         try:
-            image = Image.open(io.BytesIO(img_data))
+            # 尝试保存第一帧到文件进行调试
+            if self.frame_count == 0:
+                with open("debug_frame.jpg", "wb") as f:
+                    f.write(img_data)
+                print("已保存第一帧到 debug_frame.jpg")
 
+            # 解码图像
+            image = Image.open(io.BytesIO(img_data))
+            self.log(f"图像尺寸: {image.size}")
+
+            # 获取窗口大小
             self.root.update_idletasks()
             window_width = self.root.winfo_width()
             window_height = self.root.winfo_height()
+            self.log(f"窗口尺寸: {window_width}x{window_height}")
 
+            # 缩放图像
             if window_width > 100 and window_height > 100:
                 img_width, img_height = image.size
                 scale = min(window_width / img_width, window_height / img_height)
@@ -202,16 +194,25 @@ class RemoteClient:
 
                 if scale != 1.0:
                     image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    self.log(f"缩放后尺寸: {new_width}x{new_height}")
 
+            # 转换为Tkinter格式
             self.current_image = ImageTk.PhotoImage(image)
-            self.video_label.config(image=self.current_image)
 
+            # 更新显示
+            self.video_label.config(image=self.current_image)
+            self.log("图像已更新到界面")
+
+            # 移除提示
             if hasattr(self, 'info_label') and self.info_label:
                 self.info_label.destroy()
                 self.info_label = None
 
+            self.frame_count += 1
+
         except Exception as e:
             print(f"显示图像错误: {e}")
+            traceback.print_exc()
 
     def on_mouse(self, e):
         """鼠标移动"""
@@ -260,12 +261,36 @@ class RemoteClient:
         if self.root:
             self.root.destroy()
 
+    def stop_video_stream(self):
+        """停止视频流"""
+        try:
+            self.streaming = False
+            if self.control_sock:
+                self.control_sock.send(b"STOP_STREAM:")
+                try:
+                    self.control_sock.recv(1024)
+                except:
+                    pass
+        except:
+            pass
+
     def start_gui(self):
         """启动GUI"""
         self.root = tk.Tk()
-        self.root.title("Teto 远程控制")
+        self.root.title("Teto 远程控制 - 调试版")
         self.root.geometry("1024x768")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        # 添加调试按钮
+        debug_frame = tk.Frame(self.root)
+        debug_frame.pack(side=tk.TOP, fill=tk.X)
+
+        status_label = tk.Label(debug_frame, text="状态: ", font=("Arial", 10))
+        status_label.pack(side=tk.LEFT, padx=5)
+
+        self.status_var = tk.StringVar(value="初始化中...")
+        status_text = tk.Label(debug_frame, textvariable=self.status_var, font=("Arial", 10), fg="blue")
+        status_text.pack(side=tk.LEFT)
 
         main_frame = tk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -282,27 +307,34 @@ class RemoteClient:
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.info_label = tk.Label(main_frame,
-                                   text=f"正在连接房间 {self.room}...\n\n如果长时间无响应，请检查：\n1. 服务端是否运行\n2. 房间号是否正确\n3. 防火墙是否开放端口",
+                                   text=f"连接房间 {self.room}\n等待视频流...\n\n如果长时间无画面：\n1. 检查服务端是否在截图\n2. 查看控制台输出\n3. 检查 debug_frame.jpg 是否生成",
                                    font=("Arial", 12),
                                    fg="white",
                                    bg="#2b2b2b",
                                    justify=tk.CENTER)
         self.info_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
 
+        # 启动接收线程
         self.receive_thread = threading.Thread(target=self.receive_video_stream, daemon=True)
         self.receive_thread.start()
 
+        # 更新状态
         self.update_status()
+
+        print("GUI已启动，等待视频流...")
         self.root.mainloop()
 
     def update_status(self):
-        """更新状态栏"""
+        """更新状态"""
         if self.streaming:
-            self.status_bar.config(text=f"已连接 - 房间 {self.room} - 实时画面传输中")
+            self.status_var.set(f"视频流传输中 - 已显示 {self.frame_count} 帧")
+            self.status_bar.config(text=f"已连接 - 房间 {self.room} - 视频传输中")
         elif self.control_sock:
-            self.status_bar.config(text=f"已连接 - 房间 {self.room} - 等待视频流...")
+            self.status_var.set("等待视频流...")
+            self.status_bar.config(text=f"已连接 - 房间 {self.room} - 等待视频流")
         else:
-            self.status_bar.config(text=f"连接失败 - 房间 {self.room}")
+            self.status_var.set("未连接")
+            self.status_bar.config(text="未连接")
 
         if self.root:
             self.root.after(1000, self.update_status)
@@ -310,16 +342,13 @@ class RemoteClient:
     def run(self):
         """运行"""
         if not self.connect():
-            print("\n连接失败！请确认：")
-            print(f"  1. 服务端已启动")
-            print(f"  2. 房间号 '{self.room}' 正确")
-            print(f"  3. IP地址 {self.ip}:{self.port} 可访问")
-            print(f"  4. 防火墙已开放端口 {self.port} 和 {self.port + 1}")
-            input("\n按回车键退出...")
+            print("\n连接失败！")
+            input("按回车键退出...")
             return
 
         if not self.start_video_stream():
-            print("\n警告: 视频流启动失败，但鼠标控制功能可用")
+            print("\n视频流启动失败")
+            print("尝试手动测试: 检查服务端是否正常")
 
         self.start_gui()
 
@@ -327,13 +356,12 @@ class RemoteClient:
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("=" * 50)
-        print("Teto 远程客户端")
+        print("Teto 远程客户端 (调试版)")
         print("=" * 50)
-        print("用法: python teto_client.py IP 房间号 [端口]")
+        print("用法: python teto_client_debug.py IP 房间号 [端口]")
         print("\n示例:")
-        print("  python teto_client.py 192.168.1.100 123456 5000")
-        print("  python teto_client.py 127.0.0.1 123456 5000")
-        print("\n注意: 房间号必须与服务端显示的一致")
+        print("  python teto_client_debug.py 192.168.1.100 123456 5000")
+        print("  python teto_client_debug.py 127.0.0.1 123456 5000")
         print("=" * 50)
         sys.exit(1)
 
@@ -353,7 +381,5 @@ if __name__ == "__main__":
         print("\n客户端已退出")
     except Exception as e:
         print(f"错误: {e}")
-        import traceback
-
         traceback.print_exc()
         input("\n按回车键退出...")
