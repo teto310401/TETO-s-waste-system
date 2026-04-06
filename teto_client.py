@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Teto 远程客户端（修复鼠标映射 + 显示鼠标）
+Teto 远程客户端（完整键盘支持）
 """
 import socket
 import threading
@@ -35,12 +35,14 @@ class RemoteClient:
         # 鼠标相关
         self.remote_mouse_x = 0
         self.remote_mouse_y = 0
-        self.screen_width = 1920  # 远程屏幕宽度
-        self.screen_height = 1080  # 远程屏幕高度
-        self.display_scale = 1.0  # 显示缩放比例
+        self.screen_width = 1920
+        self.screen_height = 1080
+        self.display_scale = 1.0
 
-        # 鼠标样式（画一个十字光标）
-        self.mouse_cursor = None
+        # 修饰键状态
+        self.shift_pressed = False
+        self.ctrl_pressed = False
+        self.alt_pressed = False
 
     def log(self, msg):
         print(f"[{time.strftime('%H:%M:%S')}] {msg}")
@@ -53,7 +55,6 @@ class RemoteClient:
             self.log(f"连接 {self.ip}:{self.port}...")
             self.sock.connect((self.ip, self.port))
 
-            # 发送房间号
             self.sock.send(self.room.encode())
             response = self.sock.recv(1024).decode()
 
@@ -75,56 +76,31 @@ class RemoteClient:
             self.log(f"连接失败: {e}")
             return False
 
-    def create_mouse_cursor(self, size=20):
-        """创建鼠标光标图像"""
-        cursor_img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(cursor_img)
-
-        # 绘制十字光标
-        center = size // 2
-        # 水平线
-        draw.line([(0, center), (size - 1, center)], fill='white', width=2)
-        # 垂直线
-        draw.line([(center, 0), (center, size - 1)], fill='white', width=2)
-        # 中心点
-        draw.ellipse([(center - 2, center - 2), (center + 2, center + 2)], fill='red')
-        # 外框
-        draw.rectangle([(0, 0), (size - 1, size - 1)], outline='white', width=1)
-
-        return ImageTk.PhotoImage(cursor_img)
-
     def draw_mouse_on_image(self, image):
         """在图像上绘制鼠标位置"""
         if not self.streaming:
             return image
 
-        # 创建可编辑的图像副本
         if image.mode != 'RGBA':
             image = image.convert('RGBA')
 
         draw = ImageDraw.Draw(image)
 
-        # 计算鼠标在图像上的位置（根据缩放比例）
         img_width, img_height = image.size
         mouse_img_x = int(self.remote_mouse_x * img_width / self.screen_width)
         mouse_img_y = int(self.remote_mouse_y * img_height / self.screen_height)
 
-        # 限制范围
         mouse_img_x = max(0, min(mouse_img_x, img_width - 1))
         mouse_img_y = max(0, min(mouse_img_y, img_height - 1))
 
-        # 绘制鼠标指针（圆形+十字）
-        size = max(8, min(20, img_width // 50))  # 动态大小
+        size = max(8, min(20, img_width // 50))
 
-        # 外圈
         draw.ellipse([(mouse_img_x - size, mouse_img_y - size),
                       (mouse_img_x + size, mouse_img_y + size)],
                      outline='white', width=2)
-        # 内圈
         draw.ellipse([(mouse_img_x - size // 2, mouse_img_y - size // 2),
                       (mouse_img_x + size // 2, mouse_img_y + size // 2)],
                      fill='red', outline='white', width=1)
-        # 十字线
         draw.line([(mouse_img_x - size, mouse_img_y), (mouse_img_x + size, mouse_img_y)],
                   fill='white', width=2)
         draw.line([(mouse_img_x, mouse_img_y - size), (mouse_img_x, mouse_img_y + size)],
@@ -140,7 +116,6 @@ class RemoteClient:
             try:
                 self.sock.settimeout(1.0)
 
-                # 接收图像长度
                 len_data = b''
                 while len(len_data) < 4:
                     chunk = self.sock.recv(4 - len(len_data))
@@ -151,7 +126,6 @@ class RemoteClient:
                 img_len = struct.unpack('>I', len_data)[0]
 
                 if img_len > 0 and img_len < 10 * 1024 * 1024:
-                    # 接收图像数据
                     img_data = b''
                     while len(img_data) < img_len:
                         chunk = self.sock.recv(min(8192, img_len - len(img_data)))
@@ -160,7 +134,6 @@ class RemoteClient:
                         img_data += chunk
 
                     if len(img_data) == img_len:
-                        # 清空队列
                         while not self.image_queue.empty():
                             try:
                                 self.image_queue.get_nowait()
@@ -178,30 +151,24 @@ class RemoteClient:
         self.log("视频接收结束")
 
     def update_display(self):
-        """更新显示（在主线程中运行）"""
+        """更新显示"""
         if not self.streaming or not self.root:
             return
 
         try:
-            # 获取最新图像
             try:
                 img_data = self.image_queue.get_nowait()
             except queue.Empty:
                 self.root.after(33, self.update_display)
                 return
 
-            # 解码图像
             image = Image.open(io.BytesIO(img_data))
-
-            # 在图像上绘制鼠标
             image = self.draw_mouse_on_image(image)
 
-            # 获取窗口大小
             width = self.root.winfo_width()
             height = self.root.winfo_height()
 
             if width > 10 and height > 10:
-                # 计算缩放比例
                 img_width, img_height = image.size
                 scale_w = width / img_width
                 scale_h = height / img_height
@@ -213,27 +180,23 @@ class RemoteClient:
                 if self.display_scale != 1.0:
                     image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-            # 转换为Tkinter格式
             self.current_photo = ImageTk.PhotoImage(image)
             self.video_label.config(image=self.current_photo)
 
-            # 隐藏提示
             if hasattr(self, 'info_label') and self.info_label:
                 self.info_label.destroy()
                 self.info_label = None
 
-            # 显示帧率
             self.frame_count += 1
             if time.time() - self.last_time >= 1.0:
                 fps = self.frame_count
-                self.root.title(f"Teto 远程控制 - {fps} FPS - 远程鼠标: ({self.remote_mouse_x}, {self.remote_mouse_y})")
+                self.root.title(f"Teto 远程控制 - {fps} FPS")
                 self.frame_count = 0
                 self.last_time = time.time()
 
         except Exception as e:
             self.log(f"显示错误: {e}")
 
-        # 继续循环
         self.root.after(33, self.update_display)
 
     def send_command(self, cmd):
@@ -244,71 +207,119 @@ class RemoteClient:
         except:
             pass
 
+    def send_key_event(self, key, is_press=True):
+        """发送键盘事件"""
+        event_type = "KEY_DOWN" if is_press else "KEY_UP"
+        self.send_command(f"{event_TYPE}:{key}")
+
     def on_mouse_move(self, event):
-        """鼠标移动 - 修正坐标映射"""
+        """鼠标移动"""
         if self.video_label and self.current_photo:
-            # 获取实际显示区域的大小
             label_w = self.video_label.winfo_width()
             label_h = self.video_label.winfo_height()
-
-            # 获取图像的实际大小（显示在label中的大小）
             img_w = self.current_photo.width()
             img_h = self.current_photo.height()
 
             if label_w > 0 and img_w > 0:
-                # 计算图像在label中的偏移（居中显示）
                 offset_x = (label_w - img_w) // 2
                 offset_y = (label_h - img_h) // 2
 
-                # 计算相对于图像的实际坐标
                 rel_x = event.x - offset_x
                 rel_y = event.y - offset_y
 
-                # 检查是否在图像范围内
                 if 0 <= rel_x < img_w and 0 <= rel_y < img_h:
-                    # 映射到远程屏幕坐标
                     remote_x = int(rel_x * self.screen_width / img_w)
                     remote_y = int(rel_y * self.screen_height / img_h)
 
-                    # 限制范围
                     remote_x = max(0, min(remote_x, self.screen_width))
                     remote_y = max(0, min(remote_y, self.screen_height))
 
-                    # 更新远程鼠标位置
                     self.remote_mouse_x = remote_x
                     self.remote_mouse_y = remote_y
 
-                    # 发送移动命令
                     self.send_command(f"MOVE:{remote_x}:{remote_y}")
 
     def on_click(self, event):
         """左键点击"""
         self.send_command("CLICK_LEFT")
-        self.log(f"左键点击 - 远程坐标: ({self.remote_mouse_x}, {self.remote_mouse_y})")
 
     def on_right_click(self, event):
         """右键点击"""
         self.send_command("CLICK_RIGHT")
-        self.log(f"右键点击 - 远程坐标: ({self.remote_mouse_x}, {self.remote_mouse_y})")
 
-    def on_key(self, event):
-        """键盘事件"""
-        key = event.keysym.lower()
-        # 映射特殊键
-        key_map = {
-            'return': 'enter',
-            'backspace': 'backspace',
-            'space': 'space',
-            'escape': 'esc',
-            'up': 'up',
-            'down': 'down',
-            'left': 'left',
-            'right': 'right'
-        }
-        key = key_map.get(key, key)
-        if len(key) == 1 or key in ['enter', 'backspace', 'space', 'esc', 'up', 'down', 'left', 'right']:
-            self.send_command(f"KEY:{key}")
-            self.log(f"按键: {key}")
+    def on_key_press(self, event):
+        """键盘按下 - 完整支持"""
+        # 获取按键字符或名称
+        key = event.keysym
+
+        # 处理修饰键
+        if key == 'Shift_L' or key == 'Shift_R':
+            self.shift_pressed = True
+            self.send_command(f"KEY_DOWN:shift")
+            return
+        elif key == 'Control_L' or key == 'Control_R':
+            self.ctrl_pressed = True
+            self.send_command(f"KEY_DOWN:ctrl")
+            return
+        elif key == 'Alt_L' or key == 'Alt_R':
+            self.alt_pressed = True
+            self.send_command(f"KEY_DOWN:alt")
+            return
+
+        # 获取实际字符（考虑Shift）
+        char = event.char
+        if char and char != '':
+            # 有字符输入（字母、数字、标点符号）
+            self.send_command(f"KEY_DOWN:{char}")
+            self.send_command(f"KEY_UP:{char}")
+        else:
+            # 特殊键
+            special_keys = {
+                'Return': 'enter',
+                'BackSpace': 'backspace',
+                'Tab': 'tab',
+                'Escape': 'esc',
+                'space': 'space',
+                'Delete': 'delete',
+                'Insert': 'insert',
+                'Home': 'home',
+                'End': 'end',
+                'Page_Up': 'page_up',
+                'Page_Down': 'page_down',
+                'Up': 'up',
+                'Down': 'down',
+                'Left': 'left',
+                'Right': 'right',
+                'F1': 'f1', 'F2': 'f2', 'F3': 'f3', 'F4': 'f4',
+                'F5': 'f5', 'F6': 'f6', 'F7': 'f7', 'F8': 'f8',
+                'F9': 'f9', 'F10': 'f10', 'F11': 'f11', 'F12': 'f12'
+            }
+
+            if key in special_keys:
+                special_key = special_keys[key]
+                self.send_command(f"KEY_DOWN:{special_key}")
+                self.send_command(f"KEY_UP:{special_key}")
+
+        # 调试输出
+        if char:
+            self.log(f"按键: {char} (键名: {key})")
+        else:
+            self.log(f"特殊键: {key}")
+
+    def on_key_release(self, event):
+        """键盘释放"""
+        key = event.keysym
+
+        # 处理修饰键释放
+        if key == 'Shift_L' or key == 'Shift_R':
+            self.shift_pressed = False
+            self.send_command(f"KEY_UP:shift")
+        elif key == 'Control_L' or key == 'Control_R':
+            self.ctrl_pressed = False
+            self.send_command(f"KEY_UP:ctrl")
+        elif key == 'Alt_L' or key == 'Alt_R':
+            self.alt_pressed = False
+            self.send_command(f"KEY_UP:alt")
 
     def on_closing(self):
         """关闭窗口"""
@@ -326,8 +337,9 @@ class RemoteClient:
         self.root.geometry("1024x768")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        # 绑定键盘
-        self.root.bind_all("<Key>", self.on_key)
+        # 绑定键盘事件
+        self.root.bind_all("<KeyPress>", self.on_key_press)
+        self.root.bind_all("<KeyRelease>", self.on_key_release)
 
         # 主框架
         main_frame = tk.Frame(self.root)
@@ -356,7 +368,7 @@ class RemoteClient:
 
         # 提示
         self.info_label = tk.Label(main_frame,
-                                   text="等待视频流...\n\n移动鼠标控制远程指针\n点击鼠标进行远程点击",
+                                   text="等待视频流...\n\n移动鼠标控制远程指针\n点击鼠标进行远程点击\n支持键盘输入和标点符号",
                                    font=("Arial", 14),
                                    fg="white",
                                    bg="#2b2b2b")

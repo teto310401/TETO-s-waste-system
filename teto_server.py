@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Teto 远程服务端
+Teto 远程服务端（完整键盘支持）
 """
 import socket
 import threading
@@ -33,22 +33,17 @@ class RemoteServer:
 
         try:
             while self.running:
-                # 截图
                 img = ImageGrab.grab()
-
-                # 转换为OpenCV格式并压缩
                 frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
                 ret, jpg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
 
                 if not ret:
                     continue
 
-                # 发送数据长度和图片数据
                 data = jpg.tobytes()
                 conn.sendall(struct.pack('>I', len(data)))
                 conn.sendall(data)
 
-                # 统计帧率
                 frame_count += 1
                 if time.time() - last_time >= 1.0:
                     fps = frame_count / (time.time() - last_time)
@@ -74,7 +69,7 @@ class RemoteServer:
                 if not data:
                     break
 
-                cmd = data.decode('utf-8', 'ignore')
+                cmd = data.decode('utf-8', 'ignore').strip()
 
                 if cmd.startswith("MOVE:"):
                     try:
@@ -85,13 +80,21 @@ class RemoteServer:
 
                 elif cmd == "CLICK_LEFT":
                     pyautogui.click()
+                    print("左键点击")
 
                 elif cmd == "CLICK_RIGHT":
                     pyautogui.rightClick()
+                    print("右键点击")
 
-                elif cmd.startswith("KEY:"):
-                    key = cmd.replace("KEY:", "")
-                    pyautogui.press(key)
+                elif cmd.startswith("KEY_DOWN:"):
+                    key = cmd.replace("KEY_DOWN:", "")
+                    pyautogui.keyDown(key)
+                    print(f"按键按下: {key}")
+
+                elif cmd.startswith("KEY_UP:"):
+                    key = cmd.replace("KEY_UP:", "")
+                    pyautogui.keyUp(key)
+                    print(f"按键释放: {key}")
 
                 elif cmd == "GET_SCREEN_SIZE":
                     screen = pyautogui.size()
@@ -124,14 +127,12 @@ class RemoteServer:
                 conn, addr = server.accept()
                 print(f"客户端已连接: {addr}")
 
-                # 验证房间号
                 try:
                     room = conn.recv(1024).decode().strip()
                     if room == self.room_id:
                         conn.send(b"OK")
                         print("房间号验证通过")
 
-                        # 启动线程
                         threading.Thread(target=self.send_screen, args=(conn,), daemon=True).start()
                         threading.Thread(target=self.handle_control, args=(conn,), daemon=True).start()
                     else:
