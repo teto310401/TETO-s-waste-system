@@ -1,313 +1,146 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Teto 远程服务端（被控制端）
-修复房间号显示问题
+Teto 远程服务端
 """
-import sys
 import socket
 import threading
 import struct
 import time
-import ctypes
-import platform
-import traceback
-from PIL import ImageGrab, Image
-import io
+import cv2
+import numpy as np
+from PIL import ImageGrab
+import pyautogui
+import sys
 
-TETO_PROTOCOL = b"teto_run"
+LISTEN_PORT = 5000
+FPS = 30
+JPEG_QUALITY = 60
+pyautogui.FAILSAFE = False
 
 
 class RemoteServer:
     def __init__(self, port=5000):
         self.port = port
-        # 生成6位房间号
         self.room_id = str(100000 + int(time.time()) % 900000)
         self.running = True
-        self.local_mouse_time = 0
-        self.screen_streaming = False
-        self.screen_socket = None
-        self.control_connections = []
-        self.screen_connections = []
-        self.lock = threading.Lock()
 
-    def _check_mouse(self):
-        if platform.system() != "Windows":
-            return True
-        try:
-            pt = ctypes.wintypes.POINT()
-            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
-            self.local_mouse_time = time.time()
-        except:
-            pass
-
-    def _capture_screen(self):
-        """截取屏幕并返回压缩后的JPEG数据"""
-        try:
-            screenshot = ImageGrab.grab()
-            img_buffer = io.BytesIO()
-            screenshot.save(img_buffer, format='JPEG', quality=70, optimize=True)
-            return img_buffer.getvalue()
-        except Exception as e:
-            print(f"截图失败: {e}")
-            return None
-
-    def _send_screen_frame(self, sock):
-        """发送单帧屏幕数据"""
-        img_data = self._capture_screen()
-        if img_data is None:
-            return False
+    def send_screen(self, conn):
+        """发送屏幕画面"""
+        print("📹 屏幕传输线程启动")
+        frame_count = 0
+        last_time = time.time()
 
         try:
-            sock.sendall(struct.pack('>I', len(img_data)))
-            sock.sendall(img_data)
-            return True
-        except (socket.error, BrokenPipeError, ConnectionResetError) as e:
-            print(f"发送屏幕帧失败: {e}")
-            return False
-        except Exception as e:
-            print(f"发送屏幕帧异常: {e}")
-            return False
-
-    def _screen_stream_thread(self, sock):
-        """屏幕传输线程"""
-        print("屏幕传输线程启动，目标帧率: 30 FPS")
-        frame_interval = 1.0 / 30.0
-
-        while self.screen_streaming and self.running:
-            try:
-                if not sock or sock.fileno() == -1:
-                    print("屏幕传输socket已关闭")
-                    break
-
-                start_time = time.time()
-
-                if not self._send_screen_frame(sock):
-                    break
-
-                elapsed = time.time() - start_time
-                if elapsed < frame_interval:
-                    time.sleep(frame_interval - elapsed)
-            except (socket.error, OSError) as e:
-                print(f"屏幕传输线程socket错误: {e}")
-                break
-            except Exception as e:
-                print(f"屏幕传输线程异常: {e}")
-                break
-
-        print("屏幕传输线程结束")
-        self.screen_streaming = False
-
-    def handle_control_client(self, sock, addr):
-        """处理控制连接"""
-        print(f"控制客户端已连接: {addr}")
-
-        with self.lock:
-            self.control_connections.append(sock)
-
-        try:
-            sock.settimeout(5)
             while self.running:
-                try:
-                    data = sock.recv(1024).decode()
-                    if not data:
-                        break
+                # 截图
+                img = ImageGrab.grab()
 
-                    print(f"收到控制命令: {data[:50]}")  # 调试输出
+                # 转换为OpenCV格式并压缩
+                frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                ret, jpg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
 
-                    if data.startswith("MOVE:"):
-                        if time.time() - self.local_mouse_time > 2:
-                            parts = data[5:].split(",")
-                            if len(parts) == 2:
-                                dx, dy = map(int, parts)
-                                ctypes.windll.user32.mouse_event(0x0001, dx, dy, 0, 0)
-                    elif data.startswith("CLICK:"):
-                        ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
-                        ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
-                    elif data == "START_STREAM:":
-                        if not self.screen_streaming:
-                            self.screen_streaming = True
-                            sock.send(b"STREAM_OK")
-                            print("视频流已启动")
-                        else:
-                            sock.send(b"STREAM_ALREADY")
-                    elif data == "STOP_STREAM:":
-                        self.screen_streaming = False
-                        sock.send(b"STREAM_STOPPED")
-                        print("视频流已停止")
-                except socket.timeout:
+                if not ret:
                     continue
-                except (socket.error, ConnectionResetError, BrokenPipeError) as e:
-                    print(f"控制连接错误: {e}")
-                    break
-                except Exception as e:
-                    print(f"处理控制数据异常: {e}")
-                    break
+
+                # 发送数据长度和图片数据
+                data = jpg.tobytes()
+                conn.sendall(struct.pack('>I', len(data)))
+                conn.sendall(data)
+
+                # 统计帧率
+                frame_count += 1
+                if time.time() - last_time >= 1.0:
+                    fps = frame_count / (time.time() - last_time)
+                    print(f"帧率: {fps:.1f} FPS")
+                    frame_count = 0
+                    last_time = time.time()
+
+                time.sleep(1 / FPS)
+
         except Exception as e:
-            print(f"控制客户端处理异常: {e}")
+            print(f"屏幕传输错误: {e}")
         finally:
-            with self.lock:
-                if sock in self.control_connections:
-                    self.control_connections.remove(sock)
-            try:
-                sock.close()
-            except:
-                pass
-            print(f"控制连接断开: {addr}")
+            conn.close()
+            print("屏幕传输线程结束")
 
-    def handle_screen_client(self, sock, addr):
-        """处理屏幕传输连接"""
-        print(f"屏幕传输客户端已连接: {addr}")
-
-        with self.lock:
-            self.screen_connections.append(sock)
+    def handle_control(self, conn):
+        """处理控制命令"""
+        print("🎮 控制线程启动")
 
         try:
             while self.running:
-                if self.screen_streaming:
-                    self._screen_stream_thread(sock)
+                data = conn.recv(1024)
+                if not data:
                     break
-                else:
-                    time.sleep(0.1)
+
+                cmd = data.decode('utf-8', 'ignore')
+
+                if cmd.startswith("MOVE:"):
+                    try:
+                        _, x, y = cmd.split(":")
+                        pyautogui.moveTo(int(float(x)), int(float(y)))
+                    except:
+                        pass
+
+                elif cmd == "CLICK_LEFT":
+                    pyautogui.click()
+
+                elif cmd == "CLICK_RIGHT":
+                    pyautogui.rightClick()
+
+                elif cmd.startswith("KEY:"):
+                    key = cmd.replace("KEY:", "")
+                    pyautogui.press(key)
+
         except Exception as e:
-            print(f"屏幕客户端处理异常: {e}")
+            print(f"控制错误: {e}")
         finally:
-            with self.lock:
-                if sock in self.screen_connections:
-                    self.screen_connections.remove(sock)
-            try:
-                sock.close()
-            except:
-                pass
-            print(f"屏幕传输连接断开: {addr}")
+            conn.close()
+            print("控制线程结束")
 
     def start(self):
+        """启动服务端"""
         print("=" * 50)
         print("Teto 远程服务端")
         print("=" * 50)
         print(f"房间号: {self.room_id}")
-        print(f"控制端口: {self.port}")
-        print(f"屏幕端口: {self.port + 1}")
+        print(f"端口: {self.port}")
+        print(f"帧率: {FPS} FPS")
         print("=" * 50)
-        print("请在客户端输入以上房间号进行连接")
-        print("按 Ctrl+C 停止服务\n")
+        print("等待连接...\n")
 
-        control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        control_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        control_socket.bind(("0.0.0.0", self.port))
-        control_socket.listen(5)
-
-        screen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        screen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        screen_socket.bind(("0.0.0.0", self.port + 1))
-        screen_socket.listen(5)
-
-        print("服务已启动，等待连接...\n")
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("0.0.0.0", self.port))
+        server.listen(5)
 
         try:
             while self.running:
-                # 接受控制连接
+                conn, addr = server.accept()
+                print(f"客户端已连接: {addr}")
+
+                # 验证房间号
                 try:
-                    control_socket.settimeout(1)
-                    conn, addr = control_socket.accept()
+                    room = conn.recv(1024).decode().strip()
+                    if room == self.room_id:
+                        conn.send(b"OK")
+                        print("房间号验证通过")
 
-                    # 验证协议
-                    try:
-                        conn.settimeout(5)
-                        proto = conn.recv(len(TETO_PROTOCOL))
-                        if proto != TETO_PROTOCOL:
-                            print(f"协议错误，拒绝连接: {addr}")
-                            conn.close()
-                            continue
-
-                        room_data = conn.recv(1024).decode().strip()
-                        # 解析房间号
-                        if room_data.startswith("ROOM:"):
-                            room = room_data[5:].strip()
-                            print(f"收到房间号: '{room}', 期望: '{self.room_id}'")
-
-                            if room == self.room_id:
-                                conn.send(b"OK")
-                                print(f"✓ 控制客户端验证成功: {addr}")
-                                threading.Thread(
-                                    target=self.handle_control_client,
-                                    args=(conn, addr),
-                                    daemon=True
-                                ).start()
-                            else:
-                                conn.send(b"ERROR")
-                                print(f"✗ 房间号错误: {addr} (收到:{room}, 期望:{self.room_id})")
-                                conn.close()
-                        else:
-                            print(f"房间号格式错误: {room_data}")
-                            conn.close()
-                    except socket.timeout:
-                        print(f"验证超时: {addr}")
+                        # 启动线程
+                        threading.Thread(target=self.send_screen, args=(conn,), daemon=True).start()
+                        threading.Thread(target=self.handle_control, args=(conn,), daemon=True).start()
+                    else:
+                        conn.send(b"ERROR")
                         conn.close()
-                    except Exception as e:
-                        print(f"验证异常: {e}")
-                        conn.close()
-
-                except socket.timeout:
-                    pass
-                except Exception as e:
-                    if self.running:
-                        print(f"接受连接异常: {e}")
-
-                # 接受屏幕连接（简单处理，不在这里阻塞）
-                try:
-                    screen_socket.settimeout(0.1)
-                    conn, addr = screen_socket.accept()
-
-                    # 验证协议
-                    try:
-                        conn.settimeout(5)
-                        proto = conn.recv(len(TETO_PROTOCOL))
-                        if proto != TETO_PROTOCOL:
-                            conn.close()
-                            continue
-
-                        room_data = conn.recv(1024).decode().strip()
-                        if room_data.startswith("ROOM:"):
-                            room = room_data[5:].strip()
-                            if room == self.room_id:
-                                conn.send(b"OK")
-                                print(f"✓ 屏幕客户端验证成功: {addr}")
-                                threading.Thread(
-                                    target=self.handle_screen_client,
-                                    args=(conn, addr),
-                                    daemon=True
-                                ).start()
-                            else:
-                                conn.send(b"ERROR")
-                                conn.close()
-                        else:
-                            conn.close()
-                    except:
-                        conn.close()
-                except socket.timeout:
-                    pass
+                        print(f"房间号错误: {room}")
                 except:
-                    pass
+                    conn.close()
 
         except KeyboardInterrupt:
-            print("\n正在停止服务...")
+            print("\n正在停止...")
         finally:
-            self.running = False
-            with self.lock:
-                for conn in self.control_connections:
-                    try:
-                        conn.close()
-                    except:
-                        pass
-                for conn in self.screen_connections:
-                    try:
-                        conn.close()
-                    except:
-                        pass
-
-            control_socket.close()
-            screen_socket.close()
+            server.close()
             print("服务端已停止")
 
 
@@ -318,6 +151,3 @@ if __name__ == "__main__":
         server.start()
     except KeyboardInterrupt:
         print("\n服务端已停止")
-    except Exception as e:
-        print(f"服务端错误: {e}")
-        traceback.print_exc()
