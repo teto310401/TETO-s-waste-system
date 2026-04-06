@@ -93,6 +93,10 @@ class RemoteServer:
                     key = cmd.replace("KEY:", "")
                     pyautogui.press(key)
 
+                elif cmd == "GET_SCREEN_SIZE":
+                    screen = pyautogui.size()
+                    conn.sendall(f"{screen.width}:{screen.height}".encode())
+
         except Exception as e:
             print(f"控制错误: {e}")
         finally:
