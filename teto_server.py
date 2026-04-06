@@ -86,15 +86,21 @@ class RemoteServer:
                     pyautogui.rightClick()
                     print("右键点击")
 
+                elif cmd == "SCROLL_UP":
+                    pyautogui.scroll(1)
+                    print("滚轮向上")
+
+                elif cmd == "SCROLL_DOWN":
+                    pyautogui.scroll(-1)
+                    print("滚轮向下")
+
                 elif cmd.startswith("KEY_DOWN:"):
                     key = cmd.replace("KEY_DOWN:", "")
                     pyautogui.keyDown(key)
-                    print(f"按键按下: {key}")
 
                 elif cmd.startswith("KEY_UP:"):
                     key = cmd.replace("KEY_UP:", "")
                     pyautogui.keyUp(key)
-                    print(f"按键释放: {key}")
 
                 elif cmd == "GET_SCREEN_SIZE":
                     screen = pyautogui.size()
@@ -147,7 +153,6 @@ class RemoteServer:
         finally:
             server.close()
             print("服务端已停止")
-
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 5000

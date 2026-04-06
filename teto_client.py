@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Teto 远程客户端（完整键盘支持）
+Teto 远程客户端（完整键盘 + 鼠标滚轮支持）
 """
 import socket
 import threading
@@ -12,9 +12,7 @@ import io
 import time
 import queue
 import sys
-
-SERVER_IP = "127.0.0.1"
-SERVER_PORT = 5000
+import platform
 
 
 class RemoteClient:
@@ -43,6 +41,9 @@ class RemoteClient:
         self.shift_pressed = False
         self.ctrl_pressed = False
         self.alt_pressed = False
+
+        # 系统平台
+        self.system = platform.system()
 
     def log(self, msg):
         print(f"[{time.strftime('%H:%M:%S')}] {msg}")
@@ -207,11 +208,6 @@ class RemoteClient:
         except:
             pass
 
-    def send_key_event(self, key, is_press=True):
-        """发送键盘事件"""
-        event_type = "KEY_DOWN" if is_press else "KEY_UP"
-        self.send_command(f"{event_TYPE}:{key}")
-
     def on_mouse_move(self, event):
         """鼠标移动"""
         if self.video_label and self.current_photo:
@@ -242,14 +238,33 @@ class RemoteClient:
     def on_click(self, event):
         """左键点击"""
         self.send_command("CLICK_LEFT")
+        self.log(f"左键点击 - 坐标: ({self.remote_mouse_x}, {self.remote_mouse_y})")
 
     def on_right_click(self, event):
         """右键点击"""
         self.send_command("CLICK_RIGHT")
+        self.log(f"右键点击 - 坐标: ({self.remote_mouse_x}, {self.remote_mouse_y})")
+
+    def on_mouse_wheel(self, event):
+        """鼠标滚轮事件 (Windows/macOS)"""
+        if event.delta > 0:
+            self.send_command("SCROLL_UP")
+            self.log(f"滚轮向上")
+        else:
+            self.send_command("SCROLL_DOWN")
+            self.log(f"滚轮向下")
+
+    def on_mouse_wheel_linux(self, event):
+        """鼠标滚轮事件 (Linux)"""
+        if event.num == 4:
+            self.send_command("SCROLL_UP")
+            self.log(f"滚轮向上")
+        elif event.num == 5:
+            self.send_command("SCROLL_DOWN")
+            self.log(f"滚轮向下")
 
     def on_key_press(self, event):
-        """键盘按下 - 完整支持"""
-        # 获取按键字符或名称
+        """键盘按下"""
         key = event.keysym
 
         # 处理修饰键
@@ -266,10 +281,9 @@ class RemoteClient:
             self.send_command(f"KEY_DOWN:alt")
             return
 
-        # 获取实际字符（考虑Shift）
+        # 获取实际字符
         char = event.char
         if char and char != '':
-            # 有字符输入（字母、数字、标点符号）
             self.send_command(f"KEY_DOWN:{char}")
             self.send_command(f"KEY_UP:{char}")
         else:
@@ -300,9 +314,8 @@ class RemoteClient:
                 self.send_command(f"KEY_DOWN:{special_key}")
                 self.send_command(f"KEY_UP:{special_key}")
 
-        # 调试输出
         if char:
-            self.log(f"按键: {char} (键名: {key})")
+            self.log(f"按键: {char}")
         else:
             self.log(f"特殊键: {key}")
 
@@ -310,7 +323,6 @@ class RemoteClient:
         """键盘释放"""
         key = event.keysym
 
-        # 处理修饰键释放
         if key == 'Shift_L' or key == 'Shift_R':
             self.shift_pressed = False
             self.send_command(f"KEY_UP:shift")
@@ -354,6 +366,13 @@ class RemoteClient:
         self.video_label.bind("<Button-1>", self.on_click)
         self.video_label.bind("<Button-3>", self.on_right_click)
 
+        # 鼠标滚轮事件
+        if self.system == "Linux":
+            self.video_label.bind("<Button-4>", self.on_mouse_wheel_linux)
+            self.video_label.bind("<Button-5>", self.on_mouse_wheel_linux)
+        else:
+            self.video_label.bind("<MouseWheel>", self.on_mouse_wheel)
+
         # 状态栏
         status_frame = tk.Frame(self.root)
         status_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -368,7 +387,7 @@ class RemoteClient:
 
         # 提示
         self.info_label = tk.Label(main_frame,
-                                   text="等待视频流...\n\n移动鼠标控制远程指针\n点击鼠标进行远程点击\n支持键盘输入和标点符号",
+                                   text="等待视频流...\n\n移动鼠标控制远程指针\n点击鼠标进行远程点击\n支持键盘输入和鼠标滚轮",
                                    font=("Arial", 14),
                                    fg="white",
                                    bg="#2b2b2b")
