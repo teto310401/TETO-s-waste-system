@@ -137,7 +137,7 @@ class TetoRunFast:
     def start_client(self, ip, room_id, port=5000):
         """启动远程客户端（控制对方）"""
         self.log(f"连接远程:{ip}:{port} 房间号:{room_id}")
-        subprocess.run([sys.executable, "python teto_client.py", ip, room_id, str(port)])
+        subprocess.run([sys.executable, "teto_client.py", ip, room_id, str(port)])
 
     # ==================== CMD命令行 ====================
     def run_cmd(self):
