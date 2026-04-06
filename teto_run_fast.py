@@ -130,14 +130,14 @@ class TetoRunFast:
     def start_server(self, port=5000):
         """启动远程服务端（被控制）"""
         self.log(f"启动远程服务端，端口:{port}")
-        threading.Thread(target=lambda: subprocess.run([sys.executable, "teto_server.py", str(port)]), daemon=True).start()
+        subprocess.run(["start","cmd","/k","python teto_server.py",str(port)],shell=True)
         time.sleep(1)
         self.log("服务端启动完成", "SUCCESS")
 
     def start_client(self, ip, room_id, port=5000):
         """启动远程客户端（控制对方）"""
         self.log(f"连接远程:{ip}:{port} 房间号:{room_id}")
-        subprocess.run([sys.executable, "teto_client.py", ip, room_id, str(port)])
+        subprocess.run([sys.executable, "python teto_client.py", ip, room_id, str(port)])
 
     # ==================== CMD命令行 ====================
     def run_cmd(self):
@@ -155,6 +155,7 @@ class TetoRunFast:
                     self._show_help()
 
                 elif cmd == "optimize":
+                    subprocess.run(["start","cmd","/k","python teto_run_CPU.py"],shell=True)
                     self.optimize_memory()
                     self.boost_cpu()
                     self.optimize_network()

@@ -43,6 +43,7 @@ class RemoteClient:
 
     def on_click(self, e):
         self.sock.send(b"CLICK:1")
+        threading.Timer(0.05, lambda: self.sock.send(b"CLICK:0")).start()
 
     def start_gui(self):
         self.root = tk.Tk()
